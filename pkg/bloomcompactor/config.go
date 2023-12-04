@@ -38,13 +38,21 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	f.IntVar(&cfg.MaxCompactionParallelism, "bloom-compactor.max-compaction-parallelism", 1, "Maximum number of tables to compact in parallel. While increasing this value, please make sure compactor has enough disk space allocated to be able to store and compact as many tables.")
 }
 
-type Limits interface {
-	downloads.Limits
+type CompactorLimits interface {
 	BloomCompactorShardSize(tenantID string) int
 	BloomCompactorMaxTableAge(tenantID string) time.Duration
 	BloomCompactorMinTableAge(tenantID string) time.Duration
 	BloomCompactorEnabled(tenantID string) bool
+}
+
+type TokenizerLimits interface {
 	BloomNGramLength(tenantID string) int
 	BloomNGramSkip(tenantID string) int
 	BloomFalsePositiveRate(tenantID string) float64
+}
+
+type Limits interface {
+	downloads.Limits
+	CompactorLimits
+	TokenizerLimits
 }

@@ -268,19 +268,27 @@ func (c *Compactor) compactTable(ctx context.Context, logger log.Logger, tableNa
 // See: https://github.com/grafana/mimir/blob/34852137c332d4050e53128481f4f6417daee91e/pkg/compactor/compactor.go#L566-L689
 func (c *Compactor) compactUsers(ctx context.Context, logger log.Logger, sc storeClient, tableName string, tableInterval model.Interval, tenants []string) error {
 	// Keep track of tenants owned by this shard, so that we can delete the local files for all other users.
-	errs := multierror.New()
 	ownedTenants := make(map[string]struct{}, len(tenants))
-	for _, tenant := range tenants {
-		tenantLogger := log.With(logger, "tenant", tenant)
 
+	errs := multierror.New()
+	for _, tenant := range tenants {
 		// Ensure the context has not been canceled (ie. compactor shutdown has been triggered).
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("interrupting compaction of tenants: %w", err)
 		}
 
+		tenantLogger := log.With(logger, "tenant", tenant)
+
 		// Skip tenant if compaction is not enabled
 		if !c.limits.BloomCompactorEnabled(tenant) {
 			level.Info(tenantLogger).Log("msg", "compaction disabled for tenant. Skipping.")
+			continue
+		}
+
+		// Ensure the tenant ID belongs to our shard.
+		if !c.sharding.OwnsTenant(tenant) {
+			c.metrics.compactionRunSkippedTenants.Inc()
+			level.Debug(tenantLogger).Log("msg", "skipping tenant because it is not owned by this shard")
 			continue
 		}
 
@@ -294,13 +302,6 @@ func (c *Compactor) compactUsers(ctx context.Context, logger log.Logger, sc stor
 		}
 		if tableMaxAge > 0 && tableInterval.Start.Before(now.Add(-tableMaxAge)) {
 			level.Debug(tenantLogger).Log("msg", "skipping tenant because table is too old", "table-max-age", tableMaxAge, "table-start", tableInterval.Start, "now", now)
-			continue
-		}
-
-		// Ensure the tenant ID belongs to our shard.
-		if !c.sharding.OwnsTenant(tenant) {
-			c.metrics.compactionRunSkippedTenants.Inc()
-			level.Debug(tenantLogger).Log("msg", "skipping tenant because it is not owned by this shard")
 			continue
 		}
 
@@ -395,22 +396,17 @@ func (c *Compactor) compactTenant(ctx context.Context, logger log.Logger, sc sto
 	return errs.Err()
 }
 
-func runWithRetries(
-	ctx context.Context,
-	minBackoff, maxBackoff time.Duration,
-	maxRetries int,
-	f func(ctx context.Context) error,
-) error {
+func (c *Compactor) compactTenantWithRetries(ctx context.Context, logger log.Logger, sc storeClient, tableName string, tenant string) error {
 	var lastErr error
 
 	retries := backoff.New(ctx, backoff.Config{
-		MinBackoff: minBackoff,
-		MaxBackoff: maxBackoff,
-		MaxRetries: maxRetries,
+		MinBackoff: c.cfg.RetryMinBackoff,
+		MaxBackoff: c.cfg.RetryMaxBackoff,
+		MaxRetries: c.cfg.CompactionRetries,
 	})
 
 	for retries.Ongoing() {
-		lastErr = f(ctx)
+		lastErr = c.compactTenant(ctx, logger, sc, tableName, tenant)
 		if lastErr == nil {
 			return nil
 		}
@@ -419,18 +415,6 @@ func runWithRetries(
 	}
 
 	return lastErr
-}
-
-func (c *Compactor) compactTenantWithRetries(ctx context.Context, logger log.Logger, sc storeClient, tableName string, tenant string) error {
-	return runWithRetries(
-		ctx,
-		c.cfg.RetryMinBackoff,
-		c.cfg.RetryMaxBackoff,
-		c.cfg.CompactionRetries,
-		func(ctx context.Context) error {
-			return c.compactTenant(ctx, logger, sc, tableName, tenant)
-		},
-	)
 }
 
 func (c *Compactor) runCompact(ctx context.Context, logger log.Logger, job Job, bt *v1.BloomTokenizer, storeClient storeClient) error {
