@@ -12,19 +12,17 @@
 
   _config+:: {
     bloom_gateway+: {
+      // number of replicas
+      replicas: if $._config.use_bloom_filters then 3 else 0,
+      // if true, the host needs to have local SSD disks mounted, otherwise PVCs are used
       use_local_ssd: false,
       // PVC config
-      pvc_size: '512Gi',
-      pvc_class: 'fast',
+      pvc_size: if !self.use_local_ssd then error 'bloom_gateway.pvc_size needs to be defined when using PVC' else '128Gi',
+      pvc_class: if !self.use_local_ssd then error 'bloom_gateway.pvc_class needs to be defined when using PVC' else 'fast',
       // local SSD config
-      hostpath: '/mnt/disks/ssd0',
-      node_selector: { 'has-local-ssd': 'true' },
-      tolerations: [
-        k.core.v1.toleration.withKey('type') +
-        k.core.v1.toleration.withOperator('Equal') +
-        k.core.v1.toleration.withValue('local-ssd') +
-        k.core.v1.toleration.withEffect('NoSchedule'),
-      ],
+      hostpath: if self.use_local_ssd then error 'bloom_gateway.hostpath needs to be defined when using local SSDs' else '',
+      node_selector: if self.use_local_ssd then error 'bloom_gateway.node_selector needs to be defined when using local SSDs' else {},
+      tolerations: if self.use_local_ssd then error 'bloom_gateway.tolerations needs to be defined when using local SSDs' else [],
     },
     loki+: {
       bloom_gateway+: {
@@ -110,14 +108,16 @@
   bloom_gateway_statefulset:
     if $._config.use_bloom_filters
     then
-      statefulSet.new(name, 3, [$.bloom_gateway_container])
+      statefulSet.new(name, cfg.replicas, [$.bloom_gateway_container])
       // add clusterIP service
       + statefulSet.mixin.spec.withServiceName(name)
       // perform rolling update when statefulset configuration changes
       + statefulSet.mixin.spec.updateStrategy.withType('RollingUpdate')
       // launch or terminate pods in parallel, *does not* affect upgrades
       + statefulSet.mixin.spec.withPodManagementPolicy('Parallel')
-      // 10001 is the group ID assigned to Loki in the Dockerfile
+      // 10001 is the user/group ID assigned to Loki in the Dockerfile
+      + statefulSet.mixin.spec.template.spec.securityContext.withRunAsUser(10001)
+      + statefulSet.mixin.spec.template.spec.securityContext.withRunAsGroup(10001)
       + statefulSet.mixin.spec.template.spec.securityContext.withFsGroup(10001)
       // ensure statefulset is updated when loki config changes
       + $.config_hash_mixin
