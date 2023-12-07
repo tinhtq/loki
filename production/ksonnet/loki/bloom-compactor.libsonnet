@@ -88,7 +88,9 @@
       + statefulSet.mixin.spec.updateStrategy.withType('RollingUpdate')
       // launch or terminate pods in parallel, *does not* affect upgrades
       + statefulSet.mixin.spec.withPodManagementPolicy('Parallel')
-      // 10001 is the group ID assigned to Loki in the Dockerfile
+      // 10001 is the user/group ID assigned to Loki in the Dockerfile
+      + statefulSet.mixin.spec.template.spec.securityContext.withRunAsUser(10001)
+      + statefulSet.mixin.spec.template.spec.securityContext.withRunAsGroup(10001)
       + statefulSet.mixin.spec.template.spec.securityContext.withFsGroup(10001)
       // ensure statefulset is updated when loki config changes
       + $.config_hash_mixin
